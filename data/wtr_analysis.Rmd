@@ -1,0 +1,1460 @@
+---
+title: "wtr_analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cars}
+summary(cars)
+```
+
+## Load Libraries and Data
+
+```{r pressure, echo=FALSE}
+# Load Libraries
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(patchwork)
+library(cowplot)
+
+
+# Load Data 
+df <- read.csv("wtr_data_clean.csv")
+
+df_mod_count <- read_csv("wtr_model_pred_counts.csv")
+df_mod_probs <- read_csv("wtr_model_pred_probs.csv")
+
+
+
+```
+# Demographics 
+```{r}
+df |> summary()
+
+df %>%
+  distinct(pid, gender) %>%
+  count(gender)
+
+```
+# Data Visualizations
+
+
+## Emprirical Data: Welfare Tradeoff Ratio by Donation Percentage and Knowledge Condition
+```{r}
+df %>%
+  mutate(
+    knows_endowment = as.logical(knows_endowment),
+    ball_value = as.numeric(ball_value),
+    condition = case_when(
+      knows_endowment == FALSE ~ "ignores_endowment",
+      knows_endowment == TRUE & ball_value == 20 ~ "knows_low",
+      knows_endowment == TRUE & ball_value == 100 ~ "knows_high",
+      TRUE ~ NA_character_
+    )
+  ) |> 
+  ggplot(aes(x = donation_percentage, y = welfare_tradeoff_rating, color = condition)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(fun = mean, geom = "point", linewidth = 3) +
+  scale_color_manual(values = c(
+    "ignores_endowment" = "#F8766D",
+    "knows_high" = "#00BA38",
+    "knows_low" = "#619CFF"
+  )) +
+  labs(
+    x = "Donation Percentage",
+    y = "WTR rating",
+    color = "condition"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_line(color = "grey90"),
+    legend.position = "bottom"
+  )
+```
+## Model Predictions of WTR rating by Donation Amount and Knowledge Condition with model_pred_probs
+```{r}
+# Calculate expected value (weighted average)
+ModelPredProbs_Amount_Knowledge <- df_mod_probs %>%
+  mutate(
+    condition = case_when(
+      true_endowment == "unknown" ~ "ignores_endowment",
+      true_endowment == "poor"  ~ "knows_low",
+      true_endowment == "rich"  ~ "knows_high",
+      TRUE ~ "other"  
+    )
+  ) %>%
+  filter(condition != "other") %>%  
+  
+  # Calculate expected value: sum(rating * probability)
+  rowwise() %>%
+  mutate(
+    expected_rating = (
+      1 * `1` +
+      2 * `2` +
+      3 * `3` +
+      4 * `4` +
+      5 * `5` +
+      6 * `6` +
+      7 * `7`
+    )
+  ) %>%
+  ungroup() %>%
+  
+  # Group and summarize
+  group_by(donation_amount, condition) %>%
+  summarise(
+    mean_expected_rating = mean(expected_rating, na.rm = TRUE),
+    se = sd(expected_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  
+  # Create Plot
+  ggplot(aes(x = donation_amount, y = mean_expected_rating, 
+             color = condition, group = condition)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  # Add error bars (standard error)
+  geom_errorbar(aes(ymin = mean_expected_rating - se, 
+                    ymax = mean_expected_rating + se),
+                width = 0.1, alpha = 0.5) +
+  scale_color_manual(
+    values = c(
+      "ignores_endowment" = "#F8766D",
+      "knows_high" = "#00BA38",
+      "knows_low" = "#619CFF"
+    ),
+    labels = c(
+      "ignores_endowment" = "Ignores Endowment",
+      "knows_high" = "Knows High",
+      "knows_low" = "Knows Low"
+    )
+  ) +
+  labs(
+    x = "Donation Amount",
+    y = "Expected WTR Rating",
+    color = "Condition"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_line(color = "grey90"),
+    legend.position = "bottom"
+  ) #+
+ # scale_y_continuous(limits = c(1, 7), breaks = 1:7)
+
+print(ModelPredProbs_Amount_Knowledge)
+```
+# Model Predictions by Donation Amount and WTR for Model Pred Counts 
+```{r}
+# Calculate expected value from counts
+ModelPredCount_Amount_Knowledge <- df_mod_count %>%
+  mutate(
+    condition = case_when(
+      true_endowment == "unknown" ~ "ignores_endowment",
+      true_endowment == "poor"  ~ "knows_low",
+      true_endowment == "rich"  ~ "knows_high",
+      TRUE ~ "other"
+    )
+  ) %>%
+  filter(condition != "other") %>%
+  
+  # Calculate expected rating from counts
+  rowwise() %>%
+  mutate(
+    total_count = sum(c_across(`1`:`7`), na.rm = TRUE),
+    expected_rating = ifelse(
+      total_count > 0,
+      (1 * `1` + 2 * `2` + 3 * `3` + 4 * `4` + 
+       5 * `5` + 6 * `6` + 7 * `7`) / total_count,
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  group_by(donation_amount, condition) %>%
+  summarise(
+    mean_expected_rating = mean(expected_rating, na.rm = TRUE),
+    se = sd(expected_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  
+  # Create Plot
+ggplot(aes(x = donation_amount, y = mean_expected_rating)) +
+  geom_line(data = . %>% filter(condition == "ignores_endowment"),
+            aes(group = condition), color = "#F8766D", size = 1.5, linetype = "solid") +
+  geom_line(data = . %>% filter(condition == "knows_high"),
+            aes(group = condition), color = "#00BA38", size = 1, linetype = "dashed") +
+  geom_line(data = . %>% filter(condition == "knows_low"),
+            aes(group = condition), color = "#619CFF", size = 1, linetype = "dashed") +
+  geom_point(aes(color = condition), size = 3) +
+  geom_errorbar(aes(ymin = mean_expected_rating - se, 
+                    ymax = mean_expected_rating + se,
+                    color = condition),
+                width = 0.1, alpha = 0.5) +
+  
+  # Color scale for points and error bars
+  scale_color_manual(
+    values = c(
+      "ignores_endowment" = "#F8766D",
+      "knows_high" = "#00BA38",
+      "knows_low" = "#619CFF"
+    ),
+    labels = c(
+      "ignores_endowment" = "Ignores Endowment",
+      "knows_high" = "Knows High",
+      "knows_low" = "Knows Low"
+    )
+  ) +
+  labs(
+    x = "Donation Amount",
+    y = "Expected WTR Rating",
+    color = "Condition"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_line(color = "grey90"),
+    legend.position = "bottom"
+  ) +
+  scale_y_continuous(limits = c(1, 7), breaks = 1:7)
+
+print(ModelPredCount_Amount_Knowledge)
+
+```
+#Model Predictions Plot by Donation Amount 
+```{r}
+model_newplot <-df_newpred %>% ggplot(aes(x=donation_amount, y=m.pred,
+                   color=factor(condition,
+                                levels=c('unknown', 'known_rich', 'known_poor')),
+                   linetype=prior))+
+  geom_point()+
+  geom_line()+
+  scale_color_discrete(name='condition')+
+  scale_x_continuous(breaks=unique(df_newpred$donation_amount))+
+  ylab('Mean Inferred WTR')+xlab('Donation Amount')+
+  theme_minimal(base_size=14)
+print(model_newplot)
+
+```
+
+
+# Final CogSci Model Plot (26.04.26)
+```{r}
+# New Model Prediction Plots (26.04.26)
+# ---------- Define custom theme ----------
+paper_theme <- theme(
+  plot.title = element_text(size = 24, face = "bold", hjust = 0),
+  plot.tag = element_text(size = 24, face = "bold"),
+
+  axis.title = element_text(size = 24),
+  axis.text.y  = element_text(size = 24),
+  axis.text.x = element_text(size = 24),
+
+  legend.title = element_text(size = 20, face = "bold"),
+  legend.text  = element_text(size = 20),
+
+  legend.position = "bottom",
+  legend.box = "horizontal",
+  legend.box.just = "center",
+
+  panel.background = element_rect(fill = "white", color = NA),
+  panel.grid.major = element_line(color = "grey80", size = 0.3),
+  panel.grid.minor = element_line(color = "grey80", size = 0.1),
+
+  plot.margin = margin(t = 10, r = 10, b = 10, l = 10)
+)
+
+# ---------- Define color and linetype ----------
+color_scale <- scale_color_manual(
+  values = c(
+    "ignores_endowment" = "#F8766D",
+    "knows_high" = "#00BA38",
+    "knows_low"  = "#619CFF"
+  ),
+  labels = c(
+    "ignores_endowment" = "Unknown Endowment",
+    "knows_high" = "Known High",
+    "knows_low"  = "Known Low"
+  )
+)
+
+linetype_scale <- scale_linetype_manual(
+  values = c(
+    "rich" = "solid",
+    "poor" = "dotdash"
+  ),
+  labels = c(
+    "rich" = "High Prior",
+    "poor" = "Low Prior"
+  )
+)
+#------------ Axis Compression Function --------------
+compress_trans <- function() {
+  scales::trans_new(
+    name = "compress",
+    transform = function(x) {
+      ifelse(x <= 30, x, 30 + (x - 30)/3)  # Compress after 30 by factor of 3
+    },
+    inverse = function(x) {
+      ifelse(x <= 30, x, 30 + (x - 30) * 3)
+    }
+  )
+}
+# --------------- Model Predictions Plot -------------
+ModelPredCount_Amount_Knowledge_PriorNotCollapsed <- df_mod_count %>%
+  mutate(
+    condition = case_when(
+      true_endowment == "unknown" ~ "ignores_endowment",
+      true_endowment == "poor"    ~ "knows_low",
+      true_endowment == "rich"    ~ "knows_high",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(condition)) %>%
+  rowwise() %>%
+  mutate(
+    total_count = sum(c_across(`X1`:`X7`), na.rm = TRUE),
+    expected_rating = ifelse(
+      total_count > 0,
+      (1*`X1` + 2*`X2` + 3*`X3` + 4*`X4` + 5*`X5` + 6*`X6` + 7*`X7`) / total_count,
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  group_by(donation_amount, condition, prior) %>%
+  summarise(
+    mean_expected_rating = mean(expected_rating, na.rm = TRUE),
+    se = sd(expected_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(
+    x = donation_amount,
+    y = mean_expected_rating,
+    color = condition,
+    linetype = prior,
+    group = interaction(condition, prior)
+  )) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_errorbar(
+    aes(ymin = mean_expected_rating - se, ymax = mean_expected_rating + se),
+    width = 0.1, alpha = 0.5
+  ) +
+  color_scale +
+  linetype_scale +
+  labs(
+    title = "Model Predictions",
+    x = "Donation Amount",
+    y = "Predicted WTR Rating",
+    color = "Endowment",
+    linetype = "Prior"
+  ) +
+  paper_theme +
+    theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank()
+  ) +
+  scale_y_continuous(limits = c(1, 7), breaks = 1:7)+
+  scale_x_continuous(breaks = c(seq(0,30,5), 50, 75, 100),
+                     trans = compress_trans())
+    #scale_x_continuous(breaks = seq(0,100,5))
+
+# --------------- Empirical Data Plot -----------------
+
+#Summary Stats for Empirical Plot
+Empirical_summary <- df %>%
+  mutate(
+    knows_endowment = as.logical(knows_endowment),
+    ball_value = as.numeric(ball_value),
+    condition = case_when(
+      knows_endowment == FALSE ~ "ignores_endowment",
+      knows_endowment == TRUE & ball_value == 20  ~ "knows_low",
+      knows_endowment == TRUE & ball_value == 100 ~ "knows_high",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(condition), !is.na(prior)) %>%
+  group_by(donation_amount, condition, prior) %>%
+  summarise(
+    mean_wtr = mean(welfare_tradeoff_rating, na.rm = TRUE),
+    se = sd(welfare_tradeoff_rating, na.rm = TRUE)/sqrt(n()),
+    .groups = "drop"
+  )
+
+Empirical_Amount_Knowledge_PriorNotCollapsed <- Empirical_summary %>%
+  ggplot(aes(
+    x = donation_amount,
+    y = mean_wtr,
+    color = condition,
+    linetype = prior,
+    group = interaction(condition, prior)
+  )) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_wtr - se, ymax = mean_wtr + se), width = 0.1, alpha = 0.5) +
+  color_scale +
+  linetype_scale +
+  labs(
+    title = "Empirical Data",
+    x = "Donation Amount",
+    y = "WTR Rating",
+    color = "Endowment",
+    linetype = "Prior"
+  ) +
+  paper_theme +
+  theme(
+    axis.title.y = element_blank()
+  ) +
+  scale_y_continuous(limits = c(1, 7), breaks = 1:7) +
+  scale_x_continuous(breaks = c(seq(0,30,5), 50, 75, 100),
+                     trans = compress_trans())
+  #scale_x_continuous(breaks = seq(0,100,5))
+
+# --------- Remove legends from BOTH plots ----------
+ModelPredCount_Amount_Knowledge_PriorNotCollapsed_no_leg <-
+  ModelPredCount_Amount_Knowledge_PriorNotCollapsed + theme(legend.position = "none")
+
+Empirical_Amount_Knowledge_PriorNotCollapsed_no_leg <-
+  Empirical_Amount_Knowledge_PriorNotCollapsed + theme(legend.position = "none")
+
+# -------- Extract shared legend from one plot -----------
+shared_legend <- cowplot::get_legend(Empirical_Amount_Knowledge_PriorNotCollapsed)
+
+# -------- Stack plots and add legend below -------------
+combined_plot <- ModelPredCount_Amount_Knowledge_PriorNotCollapsed + 
+                 Empirical_Amount_Knowledge_PriorNotCollapsed +
+                 plot_layout(ncol = 1, heights = c(1,1), guides = "collect") & 
+                 theme(
+                   legend.position = "right",
+                   legend.box = "vertical",
+                   legend.box.just = "left",
+                   legend.title = element_text(face = "bold", size = 20),
+                   legend.text  = element_text(size = 20)
+                 ) & 
+  guides(
+    linetype = guide_legend(order = 1,
+                             override.aes = list(size = 2, shape = NA)),  
+    color    = guide_legend(order = 2, override.aes = list(size = 3))
+  )
+
+# Add shared y-axis title 
+final_plot <-
+  cowplot::ggdraw(combined_plot) +
+  cowplot::draw_label(
+    "WTR Estimate",
+    x = 0,
+    y = 0.5,
+    angle = 90,
+    size = 24
+  )
+# Add margins to prevent cutoff
+final_plot <- final_plot + 
+  theme(plot.margin = margin(l = 30, r = 5, t = 0, b = 0))
+
+print(final_plot)
+
+```
+
+
+## Correlation between model and empirical means for WTR 
+```{r}
+df_mod_count2 <- df_mod_count |>
+  rowwise() |>
+  mutate(
+    mean_score =
+      sum(c_across(`1`:`7`) * 1:7) /
+      sum(c_across(`1`:`7`))
+  ) |>
+  ungroup() 
+
+df_mod_count2 <- df_mod_count2 |>
+  mutate(
+    condition = true_endowment
+  )
+  
+
+Empirical_means <- df %>%
+  mutate(
+    knows_endowment = as.logical(knows_endowment),
+    ball_value = as.numeric(ball_value),
+    condition = case_when(
+      knows_endowment == FALSE ~ "unknown",
+      knows_endowment == TRUE & ball_value == 20  ~ "poor",
+      knows_endowment == TRUE & ball_value == 100 ~ "rich",
+      TRUE ~ NA_character_
+    )) 
+Empirical_means <- Empirical_means |>
+  select(
+    prior,
+    condition,
+    donation_amount,
+    welfare_tradeoff_rating
+  )
+
+Empirical_means2 <- Empirical_means |>
+  group_by(prior,condition,donation_amount) |>
+  summarise(
+    mean_score = mean(welfare_tradeoff_rating, na.rm = T),
+    .groups = "drop"
+  )
+
+#Combine data for Plot
+combined_data <- bind_rows(
+  Empirical_means2 %>% 
+    select(prior, condition, donation_amount, mean_score) %>%  
+    mutate(type = "participant"),
+  
+  df_mod_count2 %>% 
+    mutate(type = "model")
+)
+
+#------------Correlation between Model and Participant Mean WTR ---------------
+correlation_data <- combined_data %>%
+  pivot_wider(
+    id_cols = c(prior, condition, donation_amount),
+    names_from = type,
+    values_from = mean_score
+  ) %>%
+  # Remove rows where either is missing
+  filter(!is.na(participant) & !is.na(model))
+
+# Calculate correlation
+correlation_result <- cor(
+  correlation_data$participant, 
+  correlation_data$model, 
+  use = "complete.obs"
+)
+print(correlation_result)
+```
+
+## Mean WTR scatterplot for model and empirical data 
+```{r}
+scatterplot <- ggplot(correlation_data, aes(x = model, y = participant))+
+  geom_abline(intercept = 0, slope = 1,
+              linetype = "dashed", color = "gray60", linewidth = 1)+
+  geom_point(aes(color = condition, shape = prior),
+             size = 5, alpha = 0.8, stroke = 1.2)+
+    labs(
+    x = "Model Predictions (Mean WTR)",
+    y = "Participant Data (Mean WTR)",
+    title = "Correlation between Model Predictions\nand Participant Data",
+    color = "Condition",
+    shape = "Prior"
+  ) +
+    scale_color_manual(
+    values = c(
+      "unknown" = "#F8766D",
+      "rich" = "#00BA38",
+      "poor" = "#619CFF"
+    ),
+        labels = c(
+      "unknown" = "Unknown Endowment",
+      "rich" = "Known Rich",
+      "poor" = "Known Poor"
+    )
+  ) +
+    scale_shape_manual(
+    values = c(
+      "poor" = 4,      # X shape
+      "rich" = 16      # Filled circle
+    ),
+        labels = c(
+      "poor" = "Poor Prior",
+      "rich" = "Rich Prior"
+    )
+  ) +
+  # theme
+  theme_minimal() +
+  theme(
+    # Title styling 
+    plot.title = element_text(size = 32, face = "bold", hjust = 0.5, 
+                              margin = margin(b = 15)),
+    
+    # Axis styling 
+    axis.title = element_text(size = 24),
+    axis.text = element_text(size = 20),
+    
+    # Legend styling 
+    legend.title = element_text(size = 24, face = "bold"),
+    legend.text = element_text(size = 20),
+    
+    # Legend position and arrangement
+    legend.position = "bottom",
+    legend.box = "vertical",       
+    legend.box.just = "center",
+    legend.spacing.y = unit(0.5, "cm"), 
+    legend.box.spacing = unit(0.1, "cm"),
+    
+    # Panel styling 
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_line(color = "grey80", size = 0.3),
+    panel.grid.minor = element_line(color = "grey80", size = 0.1),
+    
+    # Plot margins
+    plot.margin = margin(t = 20, r = 20, b = 15, l = 20)
+  ) +
+  
+  # legend order 
+  guides(
+    shape = guide_legend(
+      order = 1,
+      title.position = "left",
+      override.aes = list(size = 4, stroke = 1.2)
+    ),
+    color = guide_legend(
+      order = 2,
+      title.position = "left",
+      override.aes = list(size = 4, shape = 16)  
+    )
+  ) 
+
+
+print(scatterplot)
+
+
+
+```
+## Scatterplot of Empathy and WTR ratings 
+```{r}
+df_scatterplot_wtr_empathy <- df %>%
+  mutate(
+    knows_endowment = as.logical(knows_endowment),
+    ball_value = as.numeric(ball_value),
+    condition = case_when(
+      knows_endowment == FALSE ~ "unknown",
+      knows_endowment == TRUE & ball_value == 20  ~ "poor",
+      knows_endowment == TRUE & ball_value == 100 ~ "rich",
+      TRUE ~ NA_character_
+    )
+  )
+empathy_wtr_scatterplot <- ggplot(df_scatterplot_wtr_empathy, aes(x = welfare_tradeoff_rating, y = empathy_rating)) +
+geom_jitter(aes(color = condition),
+            width = 0.15, height = 0.15,
+            size = 3, alpha = 0.4, stroke = 1.2) +
+  geom_smooth(method = "lm", se = TRUE, color = "gray40", linewidth = 1) +
+    labs(
+    x = "Welfare Tradeoff Rating",
+    y = "Empathy Rating",
+    title = "Correlation between Empathy Ratings\nand Welfare Tradeoff Ratings",
+    color = "Condition"
+  )+
+  scale_color_manual(
+    values = c(
+      "unknown" = "#F8766D",
+      "rich"    = "#00BA38",
+      "poor"    = "#619CFF"
+    ),
+    labels = c(
+      "unknown" = "Unknown Endowment",
+      "rich"    = "Known Rich",
+      "poor"    = "Known Poor"
+    )
+  ) +
+  scale_shape_manual(
+    values = c(
+      "poor" = 4,   # X shape
+      "rich" = 16   # Filled circle
+    ),
+    labels = c(
+      "poor" = "Poor Prior",
+      "rich" = "Rich Prior"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(size = 32, face = "bold", hjust = 0.5,
+                                   margin = margin(b = 15)),
+    axis.title      = element_text(size = 24),
+    axis.text       = element_text(size = 20),
+    legend.title    = element_text(size = 24, face = "bold"),
+    legend.text     = element_text(size = 20),
+    legend.position    = "bottom",
+    legend.box         = "vertical",
+    legend.box.just    = "center",
+    legend.spacing.y   = unit(0.5, "cm"),
+    legend.box.spacing = unit(0.1, "cm"),
+    panel.background   = element_rect(fill = "white", color = NA),
+    panel.grid.major   = element_line(color = "grey80", size = 0.3),
+    panel.grid.minor   = element_line(color = "grey80", size = 0.1),
+    plot.margin        = margin(t = 20, r = 20, b = 15, l = 20)
+  ) +
+  guides(
+    shape = guide_legend(
+      order = 1,
+      title.position = "left",
+      override.aes = list(size = 4, stroke = 1.2)
+    ),
+    color = guide_legend(
+      order = 2,
+      title.position = "left",
+      override.aes = list(size = 4, shape = 16)
+    )
+  )
+
+print(empathy_wtr_scatterplot)
+
+
+```
+
+
+
+# Statistical Models for Preregistered Hypotheses
+
+#### Hypothesis 1: Participant judgments about the actor’s welfare trade-off ratio will be correlated with the model predictions about the actor’s welfare trade-off ratio
+
+```{r}
+## Add in correlation between model and participant judgments here
+print(correlation_result)
+
+updatedcor <- cor(df_newpred$m.wtr, df_newpred$m.pred)
+print(updatedcor)
+```
+
+#### Hypothesis 2: Controlling for the amount of money shared, a prior belief about the giver having a high endowment will have a negative main effect on judgments about the welfare trade-off ratio
+
+```{r}
+mod2 <- lmerTest::lmer(welfare_tradeoff_rating ~ donation_amount + prior + (1 | pid), data = df  )
+summary(mod2)
+```
+
+#### Hypothesis 3: Controlling for the amount of money shared, knowing the giver has a high endowment will have a negative main effect on judgments about the welfare trade-off ratio
+
+```{r}
+mod3 <- lmerTest::lmer(welfare_tradeoff_rating ~ donation_amount + knows_endowment + (1 | pid), data = df)
+summary(mod3)
+
+## How people marginalise between high and low endowment when they are in the unknown condition 
+df_mod3 <- df %>%
+  mutate(
+  knows_endowment = as.logical(knows_endowment),
+  ball_value = as.numeric(ball_value),
+  condition = case_when(
+    knows_endowment == FALSE ~ "ignores_endowment",
+    knows_endowment == TRUE & ball_value == 20  ~ "knows_low",
+    knows_endowment == TRUE & ball_value == 100 ~ "knows_high",
+    TRUE ~ NA_character_
+  )
+)
+
+## Is the unknown condition lower than the known_poor?
+df_unknown_poor <- df_mod3 %>%
+  filter(condition %in% c("ignores_endowment", "knows_low")) 
+
+mod_unknown_poor <- lmerTest::lmer(welfare_tradeoff_rating ~ condition + (1 | pid), 
+                         data = df_unknown_poor)
+
+summary(mod_unknown_poor)
+
+# Is the unknown condition higher than the known_rich?
+df_unknown_rich <- df_mod3 %>%
+  filter(condition %in% c("ignores_endowment", "knows_high") & 
+         donation_amount < 25)
+
+mod_unknown_rich <- lmerTest::lmer(welfare_tradeoff_rating ~ condition + (1 | pid), 
+                         data = df_unknown_rich)
+
+summary(mod_unknown_rich)
+
+```
+
+
+#### Hypothesis 4: Controlling for prior beliefs about endowment and the actual endowment, sharing money will have a positive main effect on judgments about the welfare trade-off ratio
+
+```{r}
+mod4 <- lmerTest::lmer(welfare_tradeoff_rating ~ prior + ball_value + donation_amount + (1 | pid), data = df)
+summary(mod4)
+```
+
+#### Hypothesis 5: There will be an interaction between knowledge about the endowment and the amount of money the giver shares
+
+```{r}
+## Model with all donation amounts 
+#df_mod5 <- df |> mutate(
+ #knows_endowment = fct_relevel(factor(knows_endowment), "true" 
+#))
+
+mod5 <- lmerTest::lmer(welfare_tradeoff_rating ~ knows_endowment * donation_amount + (1 | pid), data = df)
+summary(mod5)
+
+## Model looking at the interaction specifically between $15 and $25 Pre-Registered 
+df_subset <- df |>
+  filter(
+    donation_amount >= 15,
+    donation_amount <= 25,
+    prior == "poor",
+    ball_value == "100"
+  ) |>
+  select(pid, knows_endowment, donation_amount, welfare_tradeoff_rating)
+
+#df_subset <- df_subset |> mutate(
+ # knows_endowment = fct_relevel(factor(knows_endowment), "true")
+#)
+
+mod5a <- lmerTest::lmer(welfare_tradeoff_rating ~ knows_endowment * donation_amount + (1 | pid), data = df_subset)
+summary(mod5a)
+
+## Exploratory model looking at the WTR estimates specifically between $20 and $25 in the unknown condition
+df_subset2 <- df |>
+  filter(
+    donation_amount >= 20,
+    donation_amount <= 25,
+    knows_endowment == "false"
+  ) |>
+  select(pid, knows_endowment, donation_amount, welfare_tradeoff_rating)
+
+df_subset2$donation_f <- factor(df_subset2$donation_amount)
+#df_subset2$knows_endowment <- factor(df_subset2$knows_endowment)
+
+
+mod5b <- lmerTest::lmer(welfare_tradeoff_rating ~ donation_amount + (1 | pid), data = df_subset2)
+summary(mod5b)
+```
+
+#### Hypothesis 6: There will be a positive correlation between judgments about empathy and judgments about the welfare trade-off ratio
+
+```{r}
+cor.test(df$welfare_tradeoff_rating, df$empathy_rating)
+```
+
+# Exploratory Statistical Models
+
+#### Exploratory 1: Controlling for donation amount (\$15) and knowledge about endowment (unknown), prior beliefs about endowment will have an effect on the welfare trade-off ratio
+
+```{r}
+df_exploratory_1 <- df %>%
+  filter(
+    donation_amount <= 20,
+    knows_endowment == "false"
+  )
+
+mod_e1 <- lmerTest::lmer(welfare_tradeoff_rating ~ donation_amount + prior + (1 | pid), data = df_exploratory_1  )
+summary(mod_e1)
+```
+
+#### Exploratory 2: Three-way interaction between Prior x Endowment Knowledge x Endowment
+
+```{r}
+df_exploratory_2 <- df %>%
+  filter(
+    donation_amount >= 15,
+    donation_amount <= 25
+  ) %>%
+  select(pid, knows_endowment, donation_amount, welfare_tradeoff_rating, prior, ball_value)
+
+# Ensure prior and knows_endowment are factors
+df_exploratory_2$prior <- factor(df_exploratory_2$prior, levels = c("rich", "poor"))
+df_exploratory_2$knows_endowment <- factor(df_exploratory_2$knows_endowment, levels = c("true", "false"))
+
+mod_e2 <- lmerTest::lmer(welfare_tradeoff_rating ~ prior * knows_endowment * donation_amount + (1 | pid), data = df_exploratory_2)
+summary(mod_e2)
+```
+
+### Exploratory 3: Holding donation percentage constant, in the knows endowment condition, do people make WTR inference driven by percentage
+```{r}
+df_exploratory_3 <-  df %>%
+  filter(
+    knows_endowment == "true"
+  ) 
+
+mod_e3 <- lmerTest::lmer(welfare_tradeoff_rating ~ donation_amount + donation_percentage + (1 | pid), df = df_exploratory_3)
+```
+
+### Exploratory 4: Calculating the Marginalisation between Known Conditions and Unknown Condition
+```{r}
+df_mod3 <- df %>%
+  mutate(
+  knows_endowment = as.logical(knows_endowment),
+  ball_value = as.numeric(ball_value),
+  condition = case_when(
+    knows_endowment == FALSE ~ "ignores_endowment",
+    knows_endowment == TRUE & ball_value == 20  ~ "knows_low",
+    knows_endowment == TRUE & ball_value == 100 ~ "knows_high",
+    TRUE ~ NA_character_
+  ),
+  condition = factor(condition, levels = c("knows_low", "ignores_endowment", "knows_high"))
+)
+
+mod3b <- lmer(welfare_tradeoff_rating ~ condition + (1 | pid), data = df_mod3)
+summary(mod3b)
+
+#Estimate the marginal means (group means)
+library(emmeans)
+emm <- emmeans(mod3b, ~ condition)
+
+contrast(emm, method = list(
+  marginalization = c(-0.5, 1, -0.5)
+))
+```
+
+
+# Extra Data Visualisations 
+
+## Welfare Trade-off Ratio by Donation Amount and Endowment Knowledge
+```{r, fig.width=12, fig.height=7}
+df %>%
+  group_by(prior, donation_amount, knows_endowment) %>%
+  summarise(
+    mean_wtr = mean(welfare_tradeoff_rating, na.rm = TRUE),
+    se_wtr = sd(welfare_tradeoff_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+ggplot(
+       aes(x = donation_amount,
+           y = mean_wtr,
+           color = knows_endowment,
+           group = knows_endowment)) +
+  geom_line(linewidth = 1) +         
+  geom_point(size = 3) +             
+  geom_errorbar(aes(ymin = mean_wtr - se_wtr,
+                    ymax = mean_wtr + se_wtr),
+                width = 2,
+                linewidth = 0.8) +  
+  facet_wrap(~ prior) +
+  labs(
+    x = "Donation Amount",
+    y = "Mean Welfare Tradeoff Rating",
+    color = "Knows Endowment",
+    title = "Welfare Tradeoff Rating by Donation Amount\nLine Plot by Endowment Knowledge"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    strip.text = element_text(size = 18),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+## Welfare Trade-off Ratio by Donation Percentage and Endowment Knowledge
+```{r,fig.width=12, fig.height=7}
+df %>%
+  group_by(prior, donation_percentage, knows_endowment) %>%
+  summarise(
+    mean_wtr = mean(welfare_tradeoff_rating, na.rm = TRUE),
+    se_wtr = sd(welfare_tradeoff_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+ggplot(
+       aes(x = donation_percentage,
+           y = mean_wtr,
+           color = knows_endowment,
+           group = knows_endowment)) +
+  geom_line(linewidth = 1) +        
+  geom_point(size = 3) +             
+  geom_errorbar(aes(ymin = mean_wtr - se_wtr,
+                    ymax = mean_wtr + se_wtr),
+                width = 2,
+                linewidth = 0.8) +  
+  facet_wrap(~ prior) +
+  labs(
+    x = "Donation Percent",
+    y = "Mean Welfare Tradeoff Rating",
+    color = "Knows Endowment",
+    title = "Welfare Tradeoff Rating by Donation Percentage\nLine Plot by Endowment Knowledge"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    strip.text = element_text(size = 18),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+## Welfare Trade-off Ratio by Donation Percentage and faceted by Prior and Endowment Knowledge
+
+```{r}
+
+# Convert ball value to factor 
+df %>%
+  mutate(ball_value = factor(ball_value)) |>
+  group_by(prior, knows_endowment, donation_percentage, ball_value) %>%
+  summarise(
+    mean_wtr = mean(welfare_tradeoff_rating, na.rm = TRUE),
+    se_wtr = sd(welfare_tradeoff_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+# Plot
+ggplot(
+       aes(x = donation_percentage,
+           y = mean_wtr,
+           color = ball_value,
+           group = ball_value)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_wtr - se_wtr,
+                    ymax = mean_wtr + se_wtr),
+                width = 2,
+                linewidth = 0.8) +
+  facet_grid(prior ~ knows_endowment) +  
+  labs(
+    x = "Donation Percentage",
+    y = "Mean Welfare Tradeoff Rating",
+    color = "Ball Drawn",
+    title = "Welfare Tradeoff Rating by Donation Percentage\nFaceted by Prior and Endowment Knowledge"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    strip.text = element_text(size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+#### Same plot but with empathy instead of WTR ###
+
+# Convert ball value to factor 
+df %>%
+  mutate(ball_value = factor(ball_value)) |>
+# Summarize data with grouping including ball_drawn
+  group_by(prior, knows_endowment, donation_percentage, ball_value) %>%
+  summarise(
+    mean_empathy = mean(empathy_rating, na.rm = TRUE),
+    se_empathy = sd(empathy_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+#Plot
+ggplot(
+       aes(x = donation_percentage,
+           y = mean_empathy,
+           color = ball_value,
+           group = ball_value)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_empathy - se_empathy,
+                    ymax = mean_empathy + se_empathy),
+                width = 2,
+                linewidth = 0.8) +
+  facet_grid(prior ~ knows_endowment) +   
+  labs(
+    x = "Donation Percentage",
+    y = "Mean Empathy Rating",
+    color = "Ball Drawn",
+    title = " Empathy Rating by Donation Percentage\nFaceted by Prior and Endowment Knowledge"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    strip.text = element_text(size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+## Welfare Trade-off Ratio by Donation Percentage and faceted by Prior and Endowment Knowledge
+
+```{r}
+# Convert ball value to factor 
+df %>%
+  mutate(ball_value = factor(ball_value)) |>
+# Summarize data with grouping including ball_drawn
+  group_by(prior, knows_endowment, donation_amount, ball_value) %>%
+  summarise(
+    mean_welfare_tradeoff = mean(welfare_tradeoff_rating, na.rm = TRUE),
+    se_welfare_tradeoff = sd(welfare_tradeoff_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+# Plot
+ggplot(
+       aes(x = donation_amount,
+           y = mean_welfare_tradeoff,
+           color = ball_value,
+           group = ball_value)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_welfare_tradeoff - se_welfare_tradeoff,
+                    ymax = mean_welfare_tradeoff + se_welfare_tradeoff),
+                width = 2,
+                linewidth = 0.8) +
+  facet_grid(prior ~ knows_endowment) +   # facet rows = prior, cols = knows_endowment
+  labs(
+    x = "Donation Amount",
+    y = "Mean Welfare Tradeoff Rating",
+    color = "Ball Drawn",
+    title = " Welfare Tradeoff Rating by Donation Amount\nFaceted by Prior and Endowment Knowledge"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    strip.text = element_text(size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+## Same Plot but with Empathy instead of WTR ## 
+
+# Convert ball value to factor 
+df %>%
+  mutate(ball_value = factor(ball_value)) |>
+# Summarize data with grouping including ball_drawn
+  group_by(prior, knows_endowment, donation_amount, ball_value) %>%
+  summarise(
+    mean_empathy = mean(empathy_rating, na.rm = TRUE),
+    se_empathy = sd(empathy_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+# Plot
+ggplot(
+       aes(x = donation_amount,
+           y = mean_empathy,
+           color = ball_value,
+           group = ball_value)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_empathy - se_empathy,
+                    ymax = mean_empathy + se_empathy),
+                width = 2,
+                linewidth = 0.8) +
+  facet_grid(prior ~ knows_endowment) +   # facet rows = prior, cols = knows_endowment
+  labs(
+    x = "Donation Amount",
+    y = "Mean Empathy Rating",
+    color = "Ball Drawn",
+    title = "Empathy Rating by Donation Amount\nFaceted by Prior and Endowment Knowledge"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    strip.text = element_text(size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+## Interaction between Endowment and Endowment Knowledge
+
+```{r,fig.width=12, fig.height=7}
+df %>%
+  filter(
+    donation_amount >= 15,
+    donation_amount <= 25,
+    prior == "poor",
+    ball_value == "100"
+  ) %>%
+  select(pid, knows_endowment, donation_amount, welfare_tradeoff_rating) |>
+  group_by(donation_amount, knows_endowment) %>%
+  summarise(
+    mean_wtr = mean(welfare_tradeoff_rating, na.rm = TRUE),
+    se_wtr = sd(welfare_tradeoff_rating, na.rm = TRUE)/sqrt(n()),
+    .groups = "drop"
+  ) |>
+## Interaction Visualization
+ggplot(aes(x = donation_amount, y = mean_wtr, color = knows_endowment)) +
+  geom_line(size = 1.5) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_wtr - se_wtr, ymax = mean_wtr + se_wtr),
+                width = 0.5, linewidth = 0.8) +
+  labs(
+    x = "Donation Amount",
+    y = "Mean Welfare Tradeoff Rating",
+    color = "Knows Endowment",
+    title = "Interaction of Endowment Knowledge and Donation Amount\n(Poor Prior, $100 Ball)"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  )
+```
+
+## Welfare Tradeoff Ratio by Donation Amount and Prior faceted by Endowment
+```{r}
+#Convert Prior to Factor
+df %>%
+  mutate(prior = as.factor(prior)) |>
+# Summarize data with grouping including ball_drawn
+  group_by(prior, knows_endowment, donation_amount, ball_value) %>%
+  summarise(
+    mean_wtr = mean(welfare_tradeoff_rating, na.rm = TRUE),
+    se_wtr = sd(welfare_tradeoff_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) |>
+#Plot
+ggplot(
+  aes(
+    x = donation_amount,
+    y = mean_wtr,
+    color = knows_endowment,
+    group = interaction(knows_endowment, prior),
+    linetype = prior
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(
+    aes(
+      ymin = mean_wtr - se_wtr,
+      ymax = mean_wtr + se_wtr
+    ),
+    width = 2,
+    linewidth = 0.8
+  ) +
+  scale_linetype_manual(values = c("dashed", "solid")) +
+  facet_wrap(~ ball_value) +
+  labs(
+    x = "Donation Amount",
+    y = "Mean Welfare Tradeoff Rating",
+    color = "Knowledge",
+    linetype = "Prior",
+    title = "Welfare Tradeoff Rating by Donation Amount\nFaceted by Prior and Endowment Knowledge"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    strip.text = element_text(size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+## Welfare Tradeoff Ratio by Donation Amount and Knowledge Condition
+```{r}
+Empirical_Amount_Knowledge <- df %>%
+  mutate(
+    knows_endowment = as.logical(knows_endowment),
+    ball_value = as.numeric(ball_value),
+    condition = case_when(
+      knows_endowment == FALSE ~ "ignores_endowment",
+      knows_endowment == TRUE & ball_value == 20 ~ "knows_low",
+      knows_endowment == TRUE & ball_value == 100 ~ "knows_high",
+      TRUE ~ NA_character_
+    )
+  ) |> 
+  ggplot(aes(x = donation_amount, y = welfare_tradeoff_rating, color = condition)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  scale_color_manual(values = c(
+    "ignores_endowment" = "#F8766D",
+    "knows_high" = "#00BA38",
+    "knows_low" = "#619CFF"
+  )) +
+  labs(
+    x = "Donation Amount",
+    y = "WTR rating",
+    color = "condition"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_line(color = "grey90"),
+    legend.position = "bottom"
+  )
+
+print(Empirical_Amount_Knowledge)
+```
+
+## Welfare Tradeoff Ratio by Donation Percentage and Knowledge Condition
+```{r}
+df %>%
+  mutate(
+    knows_endowment = as.logical(knows_endowment),
+    ball_value = as.numeric(ball_value),
+    condition = case_when(
+      knows_endowment == FALSE ~ "ignores_endowment",
+      knows_endowment == TRUE & ball_value == 20 ~ "knows_low",
+      knows_endowment == TRUE & ball_value == 100 ~ "knows_high",
+      TRUE ~ NA_character_
+    )
+  ) |> 
+  ggplot(aes(x = donation_percentage, y = welfare_tradeoff_rating, color = condition)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  scale_color_manual(values = c(
+    "ignores_endowment" = "#F8766D",
+    "knows_high" = "#00BA38",
+    "knows_low" = "#619CFF"
+  )) +
+  labs(
+    x = "Donation Percentage",
+    y = "WTR rating",
+    color = "condition"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_line(color = "grey90"),
+    legend.position = "bottom"
+  )
+```
+
+## Combined Plot with Model Predictions and Empriical Data for Expected WTR (Initial Plot - Not Paper Ready)
+```{r}
+# ---------- Define your custom theme ----------
+paper_theme <- theme(
+  plot.title = element_text(size = 32, face = "bold", hjust = 0),
+  plot.tag = element_text(size = 28, face = "bold"),
+
+  axis.title = element_text(size = 24),
+  axis.text.y  = element_text(size = 20),
+  axis.text.x = element_text(size = 20),
+
+  legend.title = element_text(size = 24, face = "bold"),
+  legend.text  = element_text(size = 20),
+
+  legend.position = "bottom",
+  legend.box = "horizontal",
+  legend.box.just = "center",
+
+  panel.background = element_rect(fill = "white", color = NA),
+  panel.grid.major = element_line(color = "grey80", size = 0.3),
+  panel.grid.minor = element_line(color = "grey80", size = 0.1),
+
+  plot.margin = margin(t = 10, r = 10, b = 10, l = 10)
+)
+
+# ---------- Define color and linetype scales once ----------
+color_scale <- scale_color_manual(
+  values = c(
+    "ignores_endowment" = "#F8766D",
+    "knows_high" = "#00BA38",
+    "knows_low"  = "#619CFF"
+  ),
+  labels = c(
+    "ignores_endowment" = "Unknown Endowment",
+    "knows_high" = "Known Rich",
+    "knows_low"  = "Known Poor"
+  )
+)
+
+linetype_scale <- scale_linetype_manual(
+  values = c(
+    "rich" = "solid",
+    "poor" = "dotdash"
+  ),
+  labels = c(
+    "rich" = "High Prior",
+    "poor" = "Low Prior"
+  )
+)
+#------------ Axis Compression Function --------------
+compress_trans <- function() {
+  scales::trans_new(
+    name = "compress",
+    transform = function(x) {
+      ifelse(x <= 30, x, 30 + (x - 30)/3)  # Compress after 30 by factor of 3
+    },
+    inverse = function(x) {
+      ifelse(x <= 30, x, 30 + (x - 30) * 3)
+    }
+  )
+}
+# --------------- Model Predictions Plot -------------
+ModelPredCount_Amount_Knowledge_PriorNotCollapsed <- df_mod_count %>%
+  mutate(
+    condition = case_when(
+      true_endowment == "unknown" ~ "ignores_endowment",
+      true_endowment == "poor"    ~ "knows_low",
+      true_endowment == "rich"    ~ "knows_high",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(condition)) %>%
+  rowwise() %>%
+  mutate(
+    total_count = sum(c_across(`1`:`7`), na.rm = TRUE),
+    expected_rating = ifelse(
+      total_count > 0,
+      (1*`1` + 2*`2` + 3*`3` + 4*`4` + 5*`5` + 6*`6` + 7*`7`) / total_count,
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  group_by(donation_amount, condition, prior) %>%
+  summarise(
+    mean_expected_rating = mean(expected_rating, na.rm = TRUE),
+    se = sd(expected_rating, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(
+    x = donation_amount,
+    y = mean_expected_rating,
+    color = condition,
+    linetype = prior,
+    group = interaction(condition, prior)
+  )) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_errorbar(
+    aes(ymin = mean_expected_rating - se, ymax = mean_expected_rating + se),
+    width = 0.1, alpha = 0.5
+  ) +
+  color_scale +
+  linetype_scale +
+  labs(
+    title = "Model Predictions",
+    x = "Donation Amount",
+    y = "Predicted WTR Rating",
+    color = "True Endowment",
+    linetype = "Prior"
+  ) +
+  paper_theme +
+  scale_y_continuous(limits = c(1, 7), breaks = 1:7)+
+  scale_x_continuous(breaks = c(seq(0,30,5), 50, 75, 100),
+                     trans = compress_trans())
+    #scale_x_continuous(breaks = seq(0,100,5))
+
+# --------------- Empirical Data Plot -----------------
+
+#Summary Stats for Empirical Plot
+Empirical_summary <- df %>%
+  mutate(
+    knows_endowment = as.logical(knows_endowment),
+    ball_value = as.numeric(ball_value),
+    condition = case_when(
+      knows_endowment == FALSE ~ "ignores_endowment",
+      knows_endowment == TRUE & ball_value == 20  ~ "knows_low",
+      knows_endowment == TRUE & ball_value == 100 ~ "knows_high",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(condition), !is.na(prior)) %>%
+  group_by(donation_amount, condition, prior) %>%
+  summarise(
+    mean_wtr = mean(welfare_tradeoff_rating, na.rm = TRUE),
+    se = sd(welfare_tradeoff_rating, na.rm = TRUE)/sqrt(n()),
+    .groups = "drop"
+  )
+
+Empirical_Amount_Knowledge_PriorNotCollapsed <- Empirical_summary %>%
+  ggplot(aes(
+    x = donation_amount,
+    y = mean_wtr,
+    color = condition,
+    linetype = prior,
+    group = interaction(condition, prior)
+  )) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_wtr - se, ymax = mean_wtr + se), width = 0.1, alpha = 0.5) +
+  color_scale +
+  linetype_scale +
+  labs(
+    title = "Empirical Data",
+    x = "Donation Amount",
+    y = "WTR Rating",
+    color = "True Endowment",
+    linetype = "Prior"
+  ) +
+  paper_theme +
+  scale_y_continuous(limits = c(1, 7), breaks = 1:7) +
+  scale_x_continuous(breaks = c(seq(0,30,5), 50, 75, 100),
+                     trans = compress_trans())
+  #scale_x_continuous(breaks = seq(0,100,5))
+
+# --------- Remove legends from BOTH plots ----------
+ModelPredCount_Amount_Knowledge_PriorNotCollapsed_no_leg <-
+  ModelPredCount_Amount_Knowledge_PriorNotCollapsed + theme(legend.position = "none")
+
+Empirical_Amount_Knowledge_PriorNotCollapsed_no_leg <-
+  Empirical_Amount_Knowledge_PriorNotCollapsed + theme(legend.position = "none")
+
+# -------- Extract shared legend from one plot -----------
+shared_legend <- cowplot::get_legend(Empirical_Amount_Knowledge_PriorNotCollapsed)
+
+# -------- Stack plots and add legend below -------------
+combined_plot <- ModelPredCount_Amount_Knowledge_PriorNotCollapsed +
+                 Empirical_Amount_Knowledge_PriorNotCollapsed +
+                 plot_layout(ncol = 1, heights = c(1,1), guides = "collect") &
+                 theme(
+                   legend.position = "bottom",
+                   legend.box = "vertical",
+                   legend.box.just = "center",
+                   legend.title = element_text(face = "bold", size = 18),
+                   legend.text  = element_text(size = 16)
+                 ) &
+  guides(
+    linetype = guide_legend(order = 1,
+                             override.aes = list(size = 2, shape = NA)),  # thicker lines in legend
+    color    = guide_legend(order = 2, override.aes = list(size = 3))
+  )
+
+print(combined_plot)
+
+
+```
