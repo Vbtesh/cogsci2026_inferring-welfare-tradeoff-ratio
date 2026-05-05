@@ -24,10 +24,10 @@ library(cowplot)
 
 
 # Load Data 
-df <- read.csv("wtr_data_clean.csv")
+df <- read.csv("../data/wtr_data_clean.csv")
 
-df_mod_count <- read_csv("wtr_model_pred_counts.csv")
-df_mod_probs <- read_csv("wtr_model_pred_probs.csv")
+df_mod_count <- read_csv("../data/wtr_model_pred_counts.csv")
+df_mod_probs <- read_csv("../data/wtr_model_pred_probs.csv")
 
 
 
